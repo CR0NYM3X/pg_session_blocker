@@ -32,7 +32,8 @@ COMMENT ON TABLE sec_dba.blocked_applications IS
 INSERT INTO sec_dba.blocked_applications (app_pattern, description)
 VALUES
     ('%DBeaver%',   'DBeaver IDE — not authorized for production'),
-    ('%Navicat%',   'Navicat — not authorized for production')
+    ('%Navicat%',   'Navicat — not authorized for production'),
+    ('%psql%',   'Psql — not authorized for production')
 ON CONFLICT DO NOTHING;
 
 
@@ -93,7 +94,7 @@ COMMENT ON TABLE sec_dba.login_audit_log IS
 -- ---------------------------------------------------------------------------
 -- 5. MAIN FUNCTION: check_app()
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION sec_dba.check_app()
+CREATE OR REPLACE FUNCTION login_hook.login()
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -167,19 +168,10 @@ BEGIN
              format('Blocked by pattern: %s', v_matched_app));
 
         -- Reject the connection with a clear, actionable message
-        RAISE EXCEPTION E'\n\n'
-            '╔══════════════════════════════════════════════════════════════╗\n'
-            '║              UNAUTHORIZED APPLICATION DETECTED             ║\n'
-            '╠══════════════════════════════════════════════════════════════╣\n'
-            '║  User:        %-45s  ║\n'
-            '║  Database:    %-45s  ║\n'
-            '║  Application: %-45s  ║\n'
-            '╠══════════════════════════════════════════════════════════════╣\n'
-            '║  This application is not authorized per security policy.   ║\n'
-            '║  Contact the DBA Security team if you believe this is an   ║\n'
-            '║  error.                                                    ║\n'
-            '╚══════════════════════════════════════════════════════════════╝\n',
-            v_session_user, v_database, v_app_name;
+        RAISE EXCEPTION E' \n\n El usuario: [%] esta realizando una conexión a la base de datos [%] desde la aplicación [%] no autorizada. Esta acción está en violación de nuestras políticas de seguridad y no corresponde al propósito para el cual se creó el usuario. Si crees que este mensaje es un error, por favor contacta al equipo de seguridad de DBA inmediatamente. \n\n ',   v_session_user, v_database, v_app_name ;
+
+
+      
     ELSE
         -- Log successful connection
         INSERT INTO sec_dba.login_audit_log
