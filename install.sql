@@ -21,9 +21,14 @@ CREATE TABLE IF NOT EXISTS sec_dba.blocked_applications (
     app_pattern     TEXT        NOT NULL,           -- ILIKE pattern, e.g. '%DBeaver%'
     description     TEXT,                           -- Human-readable reason
     is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    log_on_success BOOLEAN NOT NULL DEFAULT FALSE,
+    log_on_failure BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by      TEXT        NOT NULL DEFAULT current_user
 );
+
+
+ 
 
 COMMENT ON TABLE sec_dba.blocked_applications IS
     'Applications blocked from connecting. Patterns are matched with ILIKE against application_name.';
@@ -45,6 +50,7 @@ CREATE TABLE IF NOT EXISTS sec_dba.exempt_users (
     username_pattern TEXT       NOT NULL,            -- Regex pattern, e.g. '^(dba_|svc_)'
     description     TEXT,
     is_active       BOOLEAN    NOT NULL DEFAULT TRUE,
+    enforce_blocking BOOLEAN    NOT NULL DEFAULT FALSE, -- Default: alerts only
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by      TEXT        NOT NULL DEFAULT current_user
 );
@@ -88,11 +94,11 @@ CREATE INDEX IF NOT EXISTS idx_login_audit_type
     WHERE event_type = 'BLOCKED';
 
 COMMENT ON TABLE sec_dba.login_audit_log IS
-    'Audit trail for all login events processed by sec_dba.check_app(). Partitioning by event_time is recommended for high-traffic clusters.';
+    'Audit trail for all login events processed by sec_dba.login(). Partitioning by event_time is recommended for high-traffic clusters.';
 
 
 -- ---------------------------------------------------------------------------
--- 5. MAIN FUNCTION: check_app()
+-- 5. MAIN FUNCTION: login()
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION login_hook.login()
 RETURNS void
@@ -112,90 +118,104 @@ DECLARE
     v_is_blocked    BOOLEAN := FALSE;
     v_is_exempt     BOOLEAN := FALSE;
     v_matched_app   TEXT;
+    -- Nuevas variables de control
+    v_log_success   BOOLEAN := FALSE;
+    v_log_failure   BOOLEAN := TRUE;
+    v_enforce       BOOLEAN := FALSE; 
 BEGIN
-    -- -----------------------------------------------------------------------
-    -- Guard: Prevent manual invocation outside login_hook context.
-    -- During login_hook execution the backend PID is not yet visible
-    -- in pg_stat_activity, so if it IS visible, this is a manual call.
-    -- -----------------------------------------------------------------------
+    -- 1. Guard: Prevent manual invocation
     IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = pg_backend_pid()) THEN
-        RAISE EXCEPTION 'sec_dba.check_app() is designed for login_hook only and cannot be invoked manually.';
+        RAISE EXCEPTION 'sec_dba.login() is designed for login_hook only and cannot be invoked manually.';
     END IF;
 
-    -- -----------------------------------------------------------------------
-    -- Gather connection metadata (safe defaults for local/unix sockets)
-    -- -----------------------------------------------------------------------
-    v_server_ip   := inet_server_addr();        -- NULL on unix socket
-    v_client_ip   := inet_client_addr();        -- NULL on unix socket
+    -- 2. Gather connection metadata
+    v_server_ip   := inet_server_addr();
+    v_client_ip   := inet_client_addr();
     v_server_port := inet_server_port();
 
-    -- -----------------------------------------------------------------------
-    -- Check if the user is exempt from application restrictions
-    -- -----------------------------------------------------------------------
-    SELECT TRUE INTO v_is_exempt
+    -- 3. Check if the user is exempt and get enforcement policy
+    SELECT TRUE, enforce_blocking INTO v_is_exempt, v_enforce
     FROM sec_dba.exempt_users
     WHERE is_active
       AND v_session_user ~ username_pattern
     LIMIT 1;
 
     v_is_exempt := COALESCE(v_is_exempt, FALSE);
+    v_enforce   := COALESCE(v_enforce, FALSE); -- Por defecto: Alerta solamente
 
-    -- -----------------------------------------------------------------------
-    -- Check if the application is in the blocked list
-    -- -----------------------------------------------------------------------
-    IF NOT v_is_exempt THEN
-        SELECT TRUE, ba.app_pattern
-          INTO v_is_blocked, v_matched_app
-        FROM sec_dba.blocked_applications ba
-        WHERE ba.is_active
-          AND v_app_name ILIKE ba.app_pattern
-        LIMIT 1;
+    -- 4. Check if the application is in the blocked list and get log policies
+    SELECT TRUE, ba.app_pattern, ba.log_on_success, ba.log_on_failure
+      INTO v_is_blocked, v_matched_app, v_log_success, v_log_failure
+    FROM sec_dba.blocked_applications ba
+    WHERE ba.is_active
+      AND v_app_name ILIKE ba.app_pattern
+    LIMIT 1;
 
-        v_is_blocked := COALESCE(v_is_blocked, FALSE);
-    END IF;
+    v_is_blocked := COALESCE(v_is_blocked, FALSE);
+    v_log_success := COALESCE(v_log_success, FALSE);
+    v_log_failure := COALESCE(v_log_failure, TRUE);
 
-    -- -----------------------------------------------------------------------
-    -- Audit & enforce
-    -- -----------------------------------------------------------------------
-    IF v_is_blocked THEN
-        -- Log blocked attempt
-        INSERT INTO sec_dba.login_audit_log
-            (event_type, server_ip, server_port, database_name,
-             session_user_, client_ip, application_name, message)
-        VALUES
-            ('BLOCKED', v_server_ip, v_server_port, v_database,
-             v_session_user, v_client_ip, v_app_name,
-             format('Blocked by pattern: %s', v_matched_app));
+    -- 5. Audit & Enforce
+    IF v_is_blocked AND NOT v_is_exempt THEN
+        -- Log blocked attempt (if policy allows)
+        IF v_log_failure THEN
+            INSERT INTO sec_dba.login_audit_log
+                (event_type, server_ip, server_port, database_name,
+                 session_user_, client_ip, application_name, message)
+            VALUES
+                ('BLOCKED', v_server_ip, v_server_port, v_database,
+                 v_session_user, v_client_ip, v_app_name,
+                 format('Blocked by pattern: %s', v_matched_app));
+        END IF;
 
-        -- Reject the connection with a clear, actionable message
-        RAISE EXCEPTION E' \n\n El usuario: [%] esta realizando una conexión a la base de datos [%] desde la aplicación [%] no autorizada. Esta acción está en violación de nuestras políticas de seguridad y no corresponde al propósito para el cual se creó el usuario. Si crees que este mensaje es un error, por favor contacta al equipo de seguridad de DBA inmediatamente. \n\n ',   v_session_user, v_database, v_app_name ;
+        -- Reject connection
+        RAISE EXCEPTION E' \n\n El usuario: [%] esta realizando una conexión a la base de datos [%] desde la aplicación [%] no autorizada... \n\n ', v_session_user, v_database, v_app_name;
 
-
-      
+    ELSIF v_is_blocked AND v_is_exempt THEN
+        -- Caso: Aplicación bloqueada pero el usuario es exento.
+        IF NOT v_enforce THEN
+            -- Solo alerta al usuario pero permite entrar
+            RAISE NOTICE 'ALERTA DE SEGURIDAD: Su usuario posee una exención para utilizar [%], pero esta aplicación no es estándar.', v_app_name;
+        END IF;
+        
+        -- Log success (if policy allows)
+        IF v_log_success THEN
+            INSERT INTO sec_dba.login_audit_log
+                (event_type, server_ip, server_port, database_name,
+                 session_user_, client_ip, application_name, message)
+            VALUES
+                ('ALLOWED_EXEMPT', v_server_ip, v_server_port, v_database,
+                 v_session_user, v_client_ip, v_app_name,
+                 'Connection authorized by user exemption');
+        END IF;
     ELSE
-        -- Log successful connection
-        INSERT INTO sec_dba.login_audit_log
-            (event_type, server_ip, server_port, database_name,
-             session_user_, client_ip, application_name, message)
-        VALUES
-            ('ALLOWED', v_server_ip, v_server_port, v_database,
-             v_session_user, v_client_ip, v_app_name,
-             'Connection authorized');
+        -- Log normal successful connection (if policy allows)
+        -- Nota: Aquí v_log_success dependerá de si se encontró un patrón, 
+        -- si no hay patrón de bloqueo, usualmente no logueamos a menos que sea necesario.
+        IF v_log_success THEN
+            INSERT INTO sec_dba.login_audit_log
+                (event_type, server_ip, server_port, database_name,
+                 session_user_, client_ip, application_name, message)
+            VALUES
+                ('ALLOWED', v_server_ip, v_server_port, v_database,
+                 v_session_user, v_client_ip, v_app_name,
+                 'Connection authorized');
+        END IF;
     END IF;
 
 EXCEPTION
     WHEN OTHERS THEN
-        -- Re-raise blocking exceptions (our own RAISE EXCEPTION above)
-        IF SQLERRM ILIKE '%UNAUTHORIZED APPLICATION%' OR
+        -- Re-raise blocking exceptions
+        IF SQLERRM ILIKE '%no autorizada%' OR
            SQLERRM ILIKE '%login_hook only%' THEN
             RAISE;
         END IF;
-        -- Swallow unexpected errors so a bug in auditing never locks users out.
-        -- Log to PostgreSQL server log for ops visibility.
-        RAISE WARNING 'sec_dba.check_app() unexpected error (connection allowed): % — %',
+        RAISE WARNING 'sec_dba.login() unexpected error (connection allowed): % — %',
                        SQLSTATE, SQLERRM;
 END;
 $$;
+
+
 
 
 -- ---------------------------------------------------------------------------
@@ -203,11 +223,11 @@ $$;
 -- ---------------------------------------------------------------------------
 
 -- Owner with minimal privileges (no superuser)
-ALTER FUNCTION sec_dba.check_app() OWNER TO postgres;
+ALTER FUNCTION sec_dba.login() OWNER TO postgres;
 
 -- All users must execute this function (login_hook calls it per-session)
 GRANT USAGE    ON SCHEMA sec_dba                TO PUBLIC;
-GRANT EXECUTE  ON FUNCTION sec_dba.check_app()  TO PUBLIC;
+GRANT EXECUTE  ON FUNCTION sec_dba.login()  TO PUBLIC;
 
 -- Only DBAs should modify configuration tables
 REVOKE ALL ON sec_dba.blocked_applications FROM PUBLIC;
