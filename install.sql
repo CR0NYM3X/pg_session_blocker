@@ -45,12 +45,12 @@ ON CONFLICT DO NOTHING;
 -- ---------------------------------------------------------------------------
 -- 3. CONFIGURATION TABLE: Exempt users (service accounts, DBAs, etc.)
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS sec_dba.exempt_users (
+CREATE TABLE IF NOT EXISTS sec_dba.blocked_users (
     id              SERIAL PRIMARY KEY,
     username_pattern TEXT       NOT NULL,            -- Regex pattern, e.g. '^(dba_|svc_)'
     description     TEXT,
     is_active       BOOLEAN    NOT NULL DEFAULT TRUE,
-    enforce_blocking BOOLEAN    NOT NULL DEFAULT FALSE, -- Default: alerts only
+    block BOOLEAN    NOT NULL DEFAULT FALSE, -- Default: alerts only
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by      TEXT        NOT NULL DEFAULT current_user
 );
@@ -61,7 +61,7 @@ COMMENT ON TABLE sec_dba.exempt_users IS
 -- Default exempt pattern: users whose name starts with a digit (legacy behavior)
 INSERT INTO sec_dba.exempt_users (username_pattern, description)
 VALUES
-    ('^[0-9]', 'Numeric-prefixed service accounts are exempt')
+    ('^[0-9]', 'Numeric-prefixed service accounts')
 ON CONFLICT DO NOTHING;
 
 
@@ -100,121 +100,6 @@ COMMENT ON TABLE sec_dba.login_audit_log IS
 -- ---------------------------------------------------------------------------
 -- 5. MAIN FUNCTION: login()
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION login_hook.login()
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = sec_dba, pg_catalog
-SET client_min_messages = notice
-SET client_encoding   = 'UTF-8'
-AS $$
-DECLARE
-    v_app_name      TEXT    := current_setting('application_name', true);
-    v_session_user  TEXT    := session_user;
-    v_database      TEXT    := current_database();
-    v_server_ip     INET;
-    v_client_ip     INET;
-    v_server_port   INT;
-    v_is_blocked    BOOLEAN := FALSE;
-    v_is_exempt     BOOLEAN := FALSE;
-    v_matched_app   TEXT;
-    -- Nuevas variables de control
-    v_log_success   BOOLEAN := FALSE;
-    v_log_failure   BOOLEAN := TRUE;
-    v_enforce       BOOLEAN := FALSE; 
-BEGIN
-    -- 1. Guard: Prevent manual invocation
-    IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = pg_backend_pid()) THEN
-        RAISE EXCEPTION 'sec_dba.login() is designed for login_hook only and cannot be invoked manually.';
-    END IF;
-
-    -- 2. Gather connection metadata
-    v_server_ip   := inet_server_addr();
-    v_client_ip   := inet_client_addr();
-    v_server_port := inet_server_port();
-
-    -- 3. Check if the user is exempt and get enforcement policy
-    SELECT TRUE, enforce_blocking INTO v_is_exempt, v_enforce
-    FROM sec_dba.exempt_users
-    WHERE is_active
-      AND v_session_user ~ username_pattern
-    LIMIT 1;
-
-    v_is_exempt := COALESCE(v_is_exempt, FALSE);
-    v_enforce   := COALESCE(v_enforce, FALSE); -- Por defecto: Alerta solamente
-
-    -- 4. Check if the application is in the blocked list and get log policies
-    SELECT TRUE, ba.app_pattern, ba.log_on_success, ba.log_on_failure
-      INTO v_is_blocked, v_matched_app, v_log_success, v_log_failure
-    FROM sec_dba.blocked_applications ba
-    WHERE ba.is_active
-      AND v_app_name ILIKE ba.app_pattern
-    LIMIT 1;
-
-    v_is_blocked := COALESCE(v_is_blocked, FALSE);
-    v_log_success := COALESCE(v_log_success, FALSE);
-    v_log_failure := COALESCE(v_log_failure, TRUE);
-
-    -- 5. Audit & Enforce
-    IF v_is_blocked AND NOT v_is_exempt THEN
-        -- Log blocked attempt (if policy allows)
-        IF v_log_failure THEN
-            INSERT INTO sec_dba.login_audit_log
-                (event_type, server_ip, server_port, database_name,
-                 session_user_, client_ip, application_name, message)
-            VALUES
-                ('BLOCKED', v_server_ip, v_server_port, v_database,
-                 v_session_user, v_client_ip, v_app_name,
-                 format('Blocked by pattern: %s', v_matched_app));
-        END IF;
-
-        -- Reject connection
-        RAISE EXCEPTION E' \n\n El usuario: [%] esta realizando una conexión a la base de datos [%] desde la aplicación [%] no autorizada... \n\n ', v_session_user, v_database, v_app_name;
-
-    ELSIF v_is_blocked AND v_is_exempt THEN
-        -- Caso: Aplicación bloqueada pero el usuario es exento.
-        IF NOT v_enforce THEN
-            -- Solo alerta al usuario pero permite entrar
-            RAISE NOTICE 'ALERTA DE SEGURIDAD: Su usuario posee una exención para utilizar [%], pero esta aplicación no es estándar.', v_app_name;
-        END IF;
-        
-        -- Log success (if policy allows)
-        IF v_log_success THEN
-            INSERT INTO sec_dba.login_audit_log
-                (event_type, server_ip, server_port, database_name,
-                 session_user_, client_ip, application_name, message)
-            VALUES
-                ('ALLOWED_EXEMPT', v_server_ip, v_server_port, v_database,
-                 v_session_user, v_client_ip, v_app_name,
-                 'Connection authorized by user exemption');
-        END IF;
-    ELSE
-        -- Log normal successful connection (if policy allows)
-        -- Nota: Aquí v_log_success dependerá de si se encontró un patrón, 
-        -- si no hay patrón de bloqueo, usualmente no logueamos a menos que sea necesario.
-        IF v_log_success THEN
-            INSERT INTO sec_dba.login_audit_log
-                (event_type, server_ip, server_port, database_name,
-                 session_user_, client_ip, application_name, message)
-            VALUES
-                ('ALLOWED', v_server_ip, v_server_port, v_database,
-                 v_session_user, v_client_ip, v_app_name,
-                 'Connection authorized');
-        END IF;
-    END IF;
-
-EXCEPTION
-    WHEN OTHERS THEN
-        -- Re-raise blocking exceptions
-        IF SQLERRM ILIKE '%no autorizada%' OR
-           SQLERRM ILIKE '%login_hook only%' THEN
-            RAISE;
-        END IF;
-        RAISE WARNING 'sec_dba.login() unexpected error (connection allowed): % — %',
-                       SQLSTATE, SQLERRM;
-END;
-$$;
-
 
 
 
