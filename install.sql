@@ -100,7 +100,106 @@ COMMENT ON TABLE sec_dba.login_audit_log IS
 -- ---------------------------------------------------------------------------
 -- 5. MAIN FUNCTION: login()
 -- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION login_hook.login()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = sec_dba, pg_catalog, public
+SET client_min_messages = notice
+SET client_encoding = 'UTF-8'
+AS $$
+DECLARE
+    -- Metadata básica
+    v_app_name      TEXT    := replace(current_setting('application_name', true) , ' ', '');
+    v_session_user  TEXT    := session_user;
+    v_database      TEXT    := current_database();
+    v_time_con      TIMESTAMP := CLOCK_TIMESTAMP();
+    
+    -- Metadata de red
+    v_server_ip     INET;
+    v_client_ip     INET;
+    v_server_port   INT;
+    
+    -- Control de flujo
+    v_is_restricted BOOLEAN := FALSE;
+    v_is_app_blocked BOOLEAN := FALSE;
+    v_matched_app   TEXT;
+    v_enforce       BOOLEAN := FALSE; 
+    v_log_success   BOOLEAN := FALSE;
+    v_log_failure   BOOLEAN := TRUE;
 
+    -- Variables para Logging en Archivo (Metodología COPY TO PROGRAM)
+    v_query_exec    TEXT;
+    v_path_log      TEXT := current_setting('data_directory') || '/' || current_setting('log_directory') || '/';
+    v_file_failed   TEXT := 'unauthorized_app_users.csv';
+    v_file_success  TEXT := 'authorized_app_users.csv';
+BEGIN
+    -- 1. Guard: Prevent manual invocation
+    IF NOT login_hook.is_executing_login_hook() THEN
+        RAISE EXCEPTION 'No puedes utilizar esta funcion, solo esta diseñada para el inicio de sesión';
+    END IF;
+
+    -- 2. VALIDACIÓN 1: ¿El usuario está en la LISTA NEGRA?
+    SELECT TRUE, enforce_blocking INTO v_is_restricted, v_enforce
+    FROM sec_dba.exempt_users 
+    WHERE is_active
+      AND v_session_user ~ username_pattern
+    LIMIT 1;
+
+    v_is_restricted := COALESCE(v_is_restricted, FALSE);
+    v_enforce       := COALESCE(v_enforce, FALSE);
+
+    -- 3. VALIDACIÓN 2: Si el usuario es restringido, chequeamos la aplicación
+    IF v_is_restricted THEN
+        SELECT TRUE, ba.app_pattern, ba.log_on_success, ba.log_on_failure
+          INTO v_is_app_blocked, v_matched_app, v_log_success, v_log_failure
+        FROM sec_dba.blocked_applications ba
+        WHERE ba.is_active
+          AND v_app_name ILIKE ba.app_pattern
+        LIMIT 1;
+
+        -- Gather connection metadata para el log
+        v_server_ip   := inet_server_addr();
+        v_client_ip   := inet_client_addr();
+        v_server_port := inet_server_port();
+
+        v_is_app_blocked := COALESCE(v_is_app_blocked, FALSE);
+        v_log_success    := COALESCE(v_log_success, FALSE);
+        v_log_failure    := COALESCE(v_log_failure, TRUE);
+
+        -- 4. PERSISTENCIA EN ARCHIVO (Inmune al Rollback)
+        IF v_is_app_blocked THEN
+            IF v_log_failure THEN
+                -- MÉTODO: Escritura directa a CSV usando UUID
+                v_query_exec := format(E'COPY (SELECT gen_random_uuid(), %L, %L, %L, %L, %L, %L, %L, \'¡¡Bloqueo por Lista Negra!!\') TO PROGRAM \'cat >> %s%s\' WITH (FORMAT CSV);',
+                                host(v_server_ip), v_server_port, v_database, v_session_user, host(v_client_ip), v_app_name, v_time_con, v_path_log, v_file_failed);
+                EXECUTE v_query_exec;
+            END IF;
+
+            -- Aplicar Bloqueo (Genera Exception pero el archivo ya fue escrito)
+            IF v_enforce THEN
+                RAISE NOTICE E' \n\n El usuario: [%] esta realizando una conexión a la base de datos [%] desde la aplicación [%] no autorizada... \n\n ', v_session_user, v_database, v_app_name;
+                RAISE EXCEPTION 'Security Policy Violation';
+            ELSE
+                RAISE NOTICE 'ALERTA DE SEGURIDAD: Usuario restringido detectado usando [%], pero el bloqueo no está activo.', v_app_name;
+            END IF;
+
+        ELSE
+            -- Usuario restringido usando App autorizada
+            IF v_log_success THEN
+                v_query_exec := format(E'COPY (SELECT gen_random_uuid(), %L, %L, %L, %L, %L, %L, %L, \'Usuario restringido - App Permitida\') TO PROGRAM \'cat >> %s%s\' WITH (FORMAT CSV);',
+                                host(v_server_ip), v_server_port, v_database, v_session_user, host(v_client_ip), v_app_name, v_time_con, v_path_log, v_file_success);
+                EXECUTE v_query_exec;
+            END IF;
+        END IF;
+    
+    ELSE
+        -- Caso: Usuario NO está en la lista negra
+        -- (No se realiza acción para optimizar el login de usuarios autorizados)
+    END IF;
+
+END;
+$$;
 
 
 -- ---------------------------------------------------------------------------
