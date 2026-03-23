@@ -218,9 +218,6 @@ REVOKE ALL ON sec_dba.blocked_applications FROM PUBLIC;
 REVOKE ALL ON sec_dba.exempt_users          FROM PUBLIC;
 REVOKE ALL ON sec_dba.login_audit_log       FROM PUBLIC;
 
--- Grant read-only on audit log to PUBLIC so users can see their own events
--- (row-level security can be added for tighter control)
-GRANT SELECT ON sec_dba.login_audit_log TO PUBLIC;
 
 
 -- ---------------------------------------------------------------------------
