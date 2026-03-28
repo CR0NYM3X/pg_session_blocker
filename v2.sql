@@ -154,6 +154,12 @@ select * from login_hook.login_audit_log ;
 
 
 
+ 
+--- cat /sysx/data14/pg_log/login_guard_activity.csv
+
+
+
+
 CREATE OR REPLACE FUNCTION login_hook.login()
 RETURNS void
 LANGUAGE plpgsql
@@ -174,7 +180,7 @@ DECLARE
     
     -- Variables de Control de Regla
     v_rule_found     BOOLEAN := FALSE;
-    v_is_active      BOOLEAN := TRUE;
+    v_is_active      BOOLEAN := TRUE; -- Nueva variable para el control de salida
     v_enforce_block  BOOLEAN;
     v_log_success    BOOLEAN;
     v_log_failure    BOOLEAN;
@@ -186,12 +192,17 @@ DECLARE
     -- Archivo único para registros vía COPY
     v_log_file_name  TEXT := 'login_guard_activity.csv';
 BEGIN
+
+        INSERT INTO login_hook.blocked_applications (app_pattern, description, is_active, block, log_on_success, log_on_failure)
+                VALUES ('%DBeaver%', 'Acceso desde DBeaver IDE', true, true, true, true);
+
     -- 1. Seguridad: Solo ejecución vía hook
     IF NOT login_hook.is_executing_login_hook() THEN
         RAISE NOTICE 'No puedes utilizar esta funcion de forma manual.';
     END IF;
 
     -- 2. PRIMER PASO: Buscar en la tabla de USUARIOS (incluyendo el filtro de la App asociada)
+    -- Se corrige el INTO: el último valor de la tabla (is_active) ahora va a v_is_active
     SELECT TRUE, u.block, u.log_on_success, u.log_on_failure, u.description, u.is_active
     INTO v_rule_found, v_enforce_block, v_log_success, v_log_failure, v_rule_desc, v_is_active
     FROM login_hook.blocked_users u
@@ -225,32 +236,59 @@ BEGIN
         -- Escenario A: SE DEBE BLOQUEAR (block = TRUE) -> Registro en ARCHIVO
         IF v_enforce_block THEN
             IF v_log_failure THEN
-                v_query_exec := format(E'COPY (SELECT gen_random_uuid(), %L, %L, %L, %L, %L, %L, %L, %L) TO PROGRAM \'cat >> %s%s\' WITH (FORMAT CSV);',
-                    host(v_server_ip), v_server_port, v_database, v_session_user, host(v_client_ip), v_app_name, v_time_con, 'ESTADO: BLOQUEADO - Motivo: ' || v_rule_desc, v_path_log, v_log_file_name);
+                v_query_exec := format(E'COPY (SELECT gen_random_uuid(), %L, %L, %L, %L, %L, %L, %L) TO PROGRAM \'cat >> %s%s\' WITH (FORMAT CSV);',
+                    host(v_server_ip), v_server_port, v_database, v_session_user, host(v_client_ip), v_app_name, v_time_con, v_path_log, v_log_file_name);
                 EXECUTE v_query_exec;
             END IF;
-            RAISE NOTICE '5555';
-            RAISE EXCEPTION 'Acceso Denegado por Política de Seguridad: %', v_rule_desc;
+            
+            RAISE NOTICE    'Acceso Denegado por Política de Seguridad: %', v_rule_desc;
+            RAISE EXCEPTION '';
 
         -- Escenario B: SOLO AUDITAR/ADVERTIR (block = FALSE) -> Registro en TABLA
         ELSE
             IF v_log_success THEN
                 -- Log en Tabla de Auditoría (Persiste porque no hay Exception)
-                INSERT INTO login_hook.login_audit_log (event_type, server_ip, server_port, database_name, session_user_, client_ip, application_name, message)
-                VALUES ('ALLOWED', v_server_ip, v_server_port, v_database, v_session_user, v_client_ip, v_app_name, 'ESTADO: PERMITIDO - Motivo: ' || v_rule_desc);
+                INSERT INTO login_hook.login_audit_log (event_type, server_ip, server_port, database_name, session_user_, client_ip, application_name)
+                VALUES ('ALLOWED', v_server_ip, v_server_port, v_database, v_session_user, v_client_ip, v_app_name ); 
             END IF;
-            RAISE NOTICE '6666';
+            
             RAISE NOTICE 'Aviso de Seguridad: Conexión registrada desde aplicación restringida (%).', v_app_name;
         END IF;
     END IF;
-    RAISE NOTICE '7777';
 
+EXCEPTION 
+    WHEN OTHERS THEN
+        -- Si el error fue un RAISE EXCEPTION intencional (bloqueo), lo relanzamos
+        IF SQLSTATE = 'P0001' THEN 
+            RAISE EXCEPTION '%', SQLERRM;
+        END IF;
+        -- Para cualquier otro error inesperado, emitimos un aviso pero permitimos el login por seguridad
+        RAISE WARNING 'Error interno en login_hook: %. Acceso permitido por política de seguridad (Fail-Open).', SQLERRM;
 END;
 $$;
-
+ 
 
  
- 
+
+--- Regresar al usuario original (solo superusuario puede hacerlo)
+
+
+SET SESSION AUTHORIZATION  "90196555";
+select * from login_hook.login();
+
+RESET SESSION AUTHORIZATION ; 
+
+/*
+ update login_hook.blocked_users set block= true;
+
+-- Activamos el log de éxito para los usuarios numéricos (como el 90196555)
+UPDATE login_hook.blocked_users  SET log_on_success = true  WHERE id = 1;
+
+*/
+-- truncate table login_hook.login_audit_log RESTART IDENTITY ;
+select * from login_hook.login_audit_log;
+
+
 
 
 
