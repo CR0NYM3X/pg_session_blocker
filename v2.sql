@@ -273,7 +273,7 @@ $$;
 --- Regresar al usuario original (solo superusuario puede hacerlo)
 
 
-SET SESSION AUTHORIZATION  "90196555";
+SET SESSION AUTHORIZATION  "90000";
 select * from login_hook.login();
 
 RESET SESSION AUTHORIZATION ; 
