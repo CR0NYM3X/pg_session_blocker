@@ -89,8 +89,8 @@ BEGIN
         IF v_rule.is_blocking THEN
           
           --v_query = FORMAT(E'SELECT pg_terminate_backend(pg_backend_pid()) /* % - % */;'  , v_current_user, v_current_app );
-          EXECUTE v_query;  -- este tumba a todas las conexiones sin importar si eres superusuario
-          --SELECT pg_terminate_backend(pg_backend_pid());
+          --EXECUTE v_query;  -- este tumba a todas las conexiones sin importar si eres superusuario
+          SELECT pg_terminate_backend(pg_backend_pid());
           --RAISE EXCEPTION ''; -- Este hace que los superusuarios pueda ingresar 
         ELSE
             RAISE WARNING 'Aviso de seguridad: Su sesión está siendo monitoreada por políticas internas.';
