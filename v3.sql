@@ -142,7 +142,13 @@ PGAPPNAME="pgadmin" PGPASSWORD=123123 psql -p 5412 -d test -h 127.0.0.1 -U jose
 TRUNCATE login_hook.pg_hba;
 
 
---  select name,setting from pg_settings where name ilike '%prelo%';
+-- select name,setting from pg_settings where name ilike '%session_preload_libraries%';
++---------------------------+------------+
+|           name            |  setting   |
++---------------------------+------------+
+| session_preload_libraries | login_hook |
++---------------------------+------------+
+(1 row)
 
 
 postgres@test#
