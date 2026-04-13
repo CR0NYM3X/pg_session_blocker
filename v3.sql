@@ -1,8 +1,4 @@
 
-Proyecto login
-
-
-BEGIN;
 
 create EXTENSION login_hook ;
 
@@ -15,10 +11,11 @@ CREATE TABLE login_hook.pg_hba (
     rule_type       text CHECK (rule_type IN ('ALLOW', 'DENY')) DEFAULT 'DENY',
     is_blocking     boolean DEFAULT true,  -- true: RAISE EXCEPTION, false: RAISE NOTICE
     is_active       boolean DEFAULT true,    -- Permite habilitar/deshabilitar la regla
+    error_msg       TEXT,
     created_at      timestamp with time zone DEFAULT now(),
 
     -- Esto evita que existan dos filas con la misma combinación de IP, Usuario y App.
-    CONSTRAINT unique_access_rule UNIQUE (client_ip, username_regex, app_name_regex)
+    CONSTRAINT unique_access_rules UNIQUE (client_ip, username_regex, app_name_regex)
 );
 
 -- Índices para mejorar la velocidad de búsqueda en cada login
@@ -42,7 +39,6 @@ DECLARE
     v_current_ip   inet := inet_client_addr();
     -- Limpiamos el app_name para consistencia
     v_current_app  text := replace(lower(current_setting('application_name', true)), ' ', '');
-    v_query        text;
 BEGIN
 
     -- 1. Seguridad: Solo ejecución vía hook (Asumiendo que esta función existe en tu entorno)
@@ -88,24 +84,24 @@ BEGIN
         
         IF v_rule.is_blocking THEN
           
-          --v_query = FORMAT(E'SELECT pg_terminate_backend(pg_backend_pid()) /* % - % */;'  , v_current_user, v_current_app );
-          --EXECUTE v_query;  -- este tumba a todas las conexiones sin importar si eres superusuario
-          SELECT pg_terminate_backend(pg_backend_pid());
+          EXECUTE FORMAT(E'SELECT pg_terminate_backend(pg_backend_pid( /*\n\n %I \n\n*/ ));' , v_rule.error_msg);
+          --SELECT 'Este mensaje es porque %L'  from pg_terminate_backend(pg_backend_pid());
           --RAISE EXCEPTION ''; -- Este hace que los superusuarios pueda ingresar 
         ELSE
             RAISE WARNING 'Aviso de seguridad: Su sesión está siendo monitoreada por políticas internas.';
         END IF;
     END IF;
+
+
+
 END;
 $$ LANGUAGE plpgsql;
 
 
-ROLLBACK;
-
 
 
 ----------------------------------------------------------------------------------------------------------------
-
+/*
 PGAPPNAME="pgadmin" psql -h localhost -U jose -d mi_base_de_datos
 psql "postgresql://jose@localhost:5432/mi_base_de_datos?application_name=DBeaver"
 psql "postgresql://jose@localhost:5432/mi_base_de_datos?application_name=DBeaver"
@@ -120,7 +116,9 @@ update login_hook.pg_hba set client_ip = '10.28.230.123'  where id = 34 ;
 INSERT INTO login_hook.pg_hba (client_ip, rule_type, is_blocking)  VALUES ('127.0.0.0/24', 'DENY', true);
 INSERT INTO login_hook.pg_hba (app_name_regex, rule_type, is_blocking)  VALUES ('^psql$', 'DENY', true);
 
-INSERT INTO login_hook.pg_hba (app_name_regex, rule_type, is_blocking)  VALUES ('^pg admin$', 'DENY', true);
+INSERT INTO login_hook.pg_hba (app_name_regex, rule_type, is_blocking, error_msg)  VALUES ('pgadmin', 'DENY', true, ' El usuario esta realizando una conexión a la base de datos desde una aplicación no autorizada. Esta acción está en violación de nuestras políticas de seguridad y no corresponde al propósito para el cual se creó el usuario. Si crees que este mensaje es un error, por favor contacta al equipo de DBA inmediatamente. ');
+
+
 
 INSERT INTO login_hook.pg_hba (client_ip, username_regex, rule_type)  VALUES ('127.0.0.1', '^postgres$', 'ALLOW');
 
@@ -146,6 +144,17 @@ TRUNCATE login_hook.pg_hba;
 
 --  select name,setting from pg_settings where name ilike '%prelo%';
 
- 
-----------------------------------------------------------------------
 
+postgres@test#
+postgres@test# select * from  login_hook.pg_hba;
++----+--------------+----------------+----------------+-----------+-------------+-----------+-------------------------------+
+| id |  client_ip   | username_regex | app_name_regex | rule_type | is_blocking | is_active |          created_at           |
++----+--------------+----------------+----------------+-----------+-------------+-----------+-------------------------------+
+|  2 | 127.0.0.1/32 | ^postgres$     | pgadmin        | ALLOW     | t           | t         | 2026-04-10 16:38:04.032428-07 |
+|  1 | NULL         | NULL           | pgadmin        | DENY      | t           | t         | 2026-04-10 16:37:52.063594-07 |
++----+--------------+----------------+----------------+-----------+-------------+-----------+-------------------------------+
+(2 rows)
+
+
+ */
+----------------------------------------------------------------------
