@@ -2,7 +2,7 @@
 
 create EXTENSION login_hook ;
 
-
+-- DROP TABLE login_hook.pg_hba;
 CREATE TABLE login_hook.pg_hba (
     id              SERIAL PRIMARY KEY,
     client_ip       CIDR ,      -- Soporta IP única o rangos CIDR
@@ -26,7 +26,7 @@ CREATE UNIQUE INDEX idx_unique_login_rules_insensitive ON login_hook.pg_hba
  (client_ip, (username_regex), (app_name_regex), rule_type );
 
 
-
+-- DROP  FUNCTION login_hook.login();
 CREATE OR REPLACE FUNCTION login_hook.login()
 RETURNS void
 SECURITY DEFINER
@@ -98,10 +98,21 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+-- Owner with minimal privileges (no superuser)
+ALTER FUNCTION login_hook.login() OWNER TO postgres;
+
+-- All users must execute this function (login_hook calls it per-session)
+GRANT USAGE    ON SCHEMA login_hook            TO PUBLIC;
+GRANT EXECUTE  ON FUNCTION login_hook.login()  TO PUBLIC;
+
+
 
 
 ----------------------------------------------------------------------------------------------------------------
 /*
+Nota importante : En caso de bloquear algo por accidente , solo retira el nombre de login_hook en el parametro session_preload_libraries que se encuentra en el archivo postgresql.conf y realiza un reload en la base de datos y ya te dejeara ingresar. 
+
+
 PGAPPNAME="pgadmin" psql -h localhost -U jose -d mi_base_de_datos
 psql "postgresql://jose@localhost:5432/mi_base_de_datos?application_name=DBeaver"
 psql "postgresql://jose@localhost:5432/mi_base_de_datos?application_name=DBeaver"
