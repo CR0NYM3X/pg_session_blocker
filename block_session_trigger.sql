@@ -13,7 +13,7 @@ CREATE TABLE public.pg_hba (
     created_at      timestamp with time zone DEFAULT now(),
 
     -- Esto evita que existan dos filas con la misma combinación de IP, Usuario y App.
-    CONSTRAINT unique_access_rules UNIQUE (client_ip, username_regex, app_name_regex)
+    CONSTRAINT unique_access_rules UNIQUE (client_ip, username_regex, app_name_regex, rule_type)
 );
 
 -- Índices para mejorar la velocidad de búsqueda en cada login
@@ -21,8 +21,7 @@ CREATE TABLE public.pg_hba (
 CREATE INDEX idx_pg_hba_active ON public.pg_hba(is_active) WHERE is_active = true;
 
 -- drop INDEX idx_unique_login_rules_insensitive ;
-CREATE UNIQUE INDEX idx_unique_login_rules_insensitive ON public.pg_hba
- (client_ip, (username_regex), (app_name_regex), rule_type );
+-- CREATE UNIQUE INDEX idx_unique_login_rules_insensitive ON public.pg_hba  (client_ip, (username_regex), (app_name_regex), rule_type );
 
 
 -- DROP FUNCTION public.login();
