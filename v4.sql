@@ -8,7 +8,7 @@ CREATE TABLE public.pg_hba (
     rule_type       text NOT NULL CHECK (rule_type IN ('ALLOW', 'DENY')) DEFAULT 'DENY',
     is_blocking     boolean DEFAULT true,  -- true: RAISE EXCEPTION, false: RAISE NOTICE
     is_active       boolean DEFAULT true,    -- Permite habilitar/deshabilitar la regla
-    error_msg       TEXT NOT NULL DEFAULT '' ,
+    error_msg       TEXT NOT NULL DEFAULT 'Política de seguridad aplicada, revise con el administrador',
     description     TEXT,
     created_at      timestamp with time zone DEFAULT now(),
 
@@ -99,7 +99,7 @@ BEGIN
       AND rule_type = 'ALLOW'
       AND (client_ip <<= '0.0.0.0/0' OR v_current_ip <<= client_ip)
       AND (username_regex = 'all' OR username_regex = 'ALL' OR v_current_user ~ username_regex)
-      AND (app_name_regex = 'all' OR username_regex = 'ALL' OR v_current_app ~ app_name_regex)
+      AND (app_name_regex = 'all' OR app_name_regex = 'ALL' OR v_current_app ~* app_name_regex)
     LIMIT 1;
 
     IF FOUND THEN
@@ -113,30 +113,24 @@ BEGIN
     FROM public.pg_hba
     WHERE is_active = true 
       AND rule_type = 'DENY'
-      AND (client_ip IS NULL OR v_current_ip <<= client_ip)
+      AND (client_ip <<= '0.0.0.0/0' OR v_current_ip <<= client_ip)
       AND (username_regex = 'all' OR username_regex = 'ALL' OR v_current_user ~ username_regex)
-      AND (app_name_regex = 'all' OR username_regex = 'ALL' OR v_current_app ~ app_name_regex)
+      AND (app_name_regex = 'all' OR app_name_regex = 'ALL' OR v_current_app ~* app_name_regex)
     --ORDER BY ( (client_ip IS NOT NULL)::int + (username_regex IS NOT NULL)::int + (app_name_regex IS NOT NULL)::int ) DESC
     LIMIT 1;
     -- El ORDER BY opcional prioriza reglas más específicas sobre las generales
 
     -- 4. Si se encontró un bloqueo, procedemos
     IF FOUND THEN
-        RAISE NOTICE 'Acceso Denegado!!!';
+        --RAISE NOTICE  'Acceso Denegado!!!';
         RAISE WARNING 'Acceso restringido: Usuario: %, IP: %, App: %, Regla ID: %', v_current_user, v_current_ip, v_current_app, v_rule.id;
 
         
         IF v_rule.is_blocking THEN
-          
-          --v_query = FORMAT(E'SELECT pg_terminate_backend(pg_backend_pid()) /* % - % */;'  , v_current_user, v_current_app );
-          --EXECUTE v_query;  -- este tumba a todas las conexiones sin importar si eres superusuario
-          --EXECUTE 'SELECT ''' || FORMAT(' El usuario %s esta usando la aplicacion %s no autorizada ',  v_current_user , v_current_app ) ||  '''  from  pg_terminate_backend(pg_backend_pid());' ;
- 
-		
+	
+          -- EXECUTE FORMAT(E'SELECT pg_terminate_backend(pg_backend_pid( /*\n\n %I \n\n*/ ));' , v_rule.error_msg);          
+			RAISE EXCEPTION E'\n\n % \n\n' , v_rule.error_msg; -- El EXCEPTION en trigger funciona mejor que login_hook este bloque todo y no es como la extension que permite el acceso a los superuser.
 
-          EXECUTE FORMAT(E'SELECT pg_terminate_backend(pg_backend_pid( /*\n\n %I \n\n*/ ));' , v_rule.error_msg);
-          --SELECT 'Este mensaje es porque %L'  from pg_terminate_backend(pg_backend_pid());
-          --RAISE EXCEPTION ''; -- Este hace que los superusuarios pueda ingresar 
         ELSE
             RAISE WARNING 'Aviso de seguridad: Su sesión está siendo monitoreada por políticas internas.';
         END IF;
