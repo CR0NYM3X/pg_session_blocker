@@ -42,7 +42,7 @@ Dependiendo de tu versión de PostgreSQL, debes aplicar el script correspondient
 
 ### v12 a v16: `block_session_login_hook.sql`
 
-Implementa un **Hook de Post-Autenticación**. Intercepta la conexión inmediatamente después de que el usuario se identifica, pero antes de otorgar acceso al catálogo.
+Implementa la extension login_hool ( **Hook de Post-Autenticación**). Intercepta la conexión inmediatamente después de que el usuario se identifica, pero antes de otorgar acceso al catálogo.
 
 ### v17 en adelante: `block_session_trigger.sql`
 
@@ -87,7 +87,6 @@ VALUES ('usuario_test', false, 'AVISO: Su actividad está siendo monitoreada por
 .
 ├── block_session_login_hook.sql   # Implementación para PG 12-16.
 ├── block_session_trigger.sql      # Implementación para PG 17+.
-├── DDL_table_setup.sql            # Creación de la tabla public.pg_hba.
 └── README.md                      # Esta guía.
 ```
 
