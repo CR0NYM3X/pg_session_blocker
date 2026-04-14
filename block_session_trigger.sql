@@ -189,8 +189,6 @@ INSERT INTO public.pg_hba (app_name_regex, rule_type, is_blocking)  VALUES ('^ps
 
 INSERT INTO public.pg_hba (app_name_regex, rule_type, is_blocking, error_msg)  VALUES ('pgadmin', 'DENY', true, ' El usuario esta realizando una conexión a la base de datos desde una aplicación no autorizada. Esta acción está en violación de nuestras políticas de seguridad y no corresponde al propósito para el cual se creó el usuario. Si crees que este mensaje es un error, por favor contacta al equipo de DBA inmediatamente. ');
 
-
-
 INSERT INTO public.pg_hba (client_ip, username_regex, rule_type)  VALUES ('127.0.0.1', '^postgres$', 'ALLOW'); 
 
 
@@ -201,6 +199,9 @@ INSERT INTO public.pg_hba (client_ip, username_regex, app_name_regex, rule_type,
 
 
 create user jose with password '123123';
+create user sysbanco with password '123123';
+create user sys123456 with password '123123';
+
 
 PGPASSWORD=123123 psql -p 5412 -d test -h 10.28.230.123
 
@@ -239,6 +240,20 @@ SET session_replication_role = replica;
 ------------------------------------
 
 
+/* Proyecto 
+create user jose with password '123123';
+create user sysbanco with password '123123';
+create user sys123456 with password '123123';
+
+user_app: EMPIEZA con letra, NO es 'sys+num' -> BLOQUEADO.
+12345: EMPIEZA con número -> PERMITIDO (no entra en la regla de bloqueo).
+sys521456: EMPIEZA con 'sys' + número -> PERMITIDO 
+system: EMPIEZA con 'sys' pero NO sigue un número -> BLOQUEADO.
+
+se puede aplicar una regla como que cubra los dos escenarios '^(?!sys[0-9])[^0-9].*'
+pero es mejor hacerlo de manera individual
+*/
+
 INSERT INTO public.pg_hba (
     username_regex, 
 	app_name_regex,
@@ -252,11 +267,26 @@ VALUES (
 	'pgadmin',
     'DENY', 
     true, 
-    'Acceso denegado: Se ha detectado un intento de acceso no autorizado. El usuario utilizado es de Uso Exclusivo de Aplicativol oficial por el cual se creo y no permite conexiones desde otras herramientas externas, Si esto es un error de configuración del aplicativo, contacte inmediatamente al equipo de DBA en dba@cronyme.mx.', 
+    'Acceso denegado: Se ha detectado un intento de acceso no autorizado. El usuario utilizado es de Uso Exclusivo para el Aplicativo oficial por el cual se creo y no permite conexiones desde otras herramientas externas, Si esto es un error de configuración del aplicativo, contacte inmediatamente al equipo de DBA en dba@cronyme.mx.', 
     'Bloqueo de usuarios cuentas de servicio'
 );
 
+INSERT INTO public.pg_hba (
+    username_regex, 
+    app_name_regex,
+    rule_type, 
+    description
+)
+VALUES (
+    '^sys[0-9].*', 
+    'pgadmin',
+    'ALLOW', 
+    'Excepción: Permitir acceso a usuarios operativos sys con número de empleado'
+);
+
+
 select * from public.pg_hba order by id desc limit 1;
+
 
  */
 ----------------------------------------------------------------------
