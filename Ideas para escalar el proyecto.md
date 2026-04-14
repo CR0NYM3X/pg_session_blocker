@@ -3,7 +3,7 @@
 Añadir columnas `start_time` y `end_time` a la tabla. Esto permitiría, por ejemplo, que los desarrolladores solo puedan conectarse en horario laboral, bloqueando cualquier acceso fuera de ese rango (prevención de exfiltración de datos en horarios no supervisados).
 
 ### 2. Cuotas de Conexiones Simultáneas
-Integrar un contador dinámico. Si un `app_name` o un `username` excede un límite definido en tu tabla (ej. max 5 conexiones para `pgAdmin`), el hook rechaza la sexta conexión. Esto evita ataques de denegación de servicio (DoS) internos.
+Integrar un contador dinámico. Si un `app_name` o un `username` excede un límite definido en tu tabla (ej. max 5 conexiones para `pgAdmin`), el hook rechaza la sexta conexión. Esto evita ataques de denegación de servicio (DoS) internos. Esto no porque ya a los usuarios se les puede integrar un limit de conexiones 
 
 ### 3. Integración con Honeypots (Tablas Trampa)
 Si una regla de `DENY` se dispara repetidamente para un IP, el sistema podría redirigir al usuario (o simplemente registrarlo) como un "Actor Malicioso" y alertar automáticamente a un sistema de monitoreo externo.
