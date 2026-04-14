@@ -236,5 +236,27 @@ alter event trigger my_login_trg enable always;
 
 SET session_replication_role = replica;
 
+------------------------------------
+
+
+INSERT INTO public.pg_hba (
+    username_regex, 
+	app_name_regex,
+    rule_type, 
+    is_blocking, 
+    error_msg, 
+    description
+)
+VALUES (
+    '^[^0-9].*', 
+	'pgadmin',
+    'DENY', 
+    true, 
+    'Acceso denegado: Se ha detectado un intento de acceso no autorizado. El usuario utilizado es de Uso Exclusivo de Aplicativol oficial por el cual se creo y no permite conexiones desde otras herramientas externas, Si esto es un error de configuración del aplicativo, contacte inmediatamente al equipo de DBA en dba@cronyme.mx.', 
+    'Bloqueo de usuarios cuentas de servicio'
+);
+
+select * from public.pg_hba order by id desc limit 1;
+
  */
 ----------------------------------------------------------------------
