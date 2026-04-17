@@ -28,3 +28,7 @@ Para aplicaciones que usan PostgREST o similares, intentar validar headers espec
 
 ### 10. Auto-Ban (Fail2Ban Interno)
 Si un usuario intenta loguearse y falla contra tus reglas de `pg_hba` más de $N$ veces en un minuto, crear una regla de `DENY` automática para su IP durante 1 hora.
+
+
+### 11 - pg_notify
+Una propuesta adicional que no está en tu lista pero que yo agregaría: notificaciones vía pg_notify. Cuando una regla DENY se dispara, además de loguear, lanzar un PERFORM pg_notify('security_alert', json_build_object(...)). Esto permite que cualquier aplicación externa (un bot de Slack, un script de monitoreo, Grafana) escuche alertas en tiempo real sin polling. Es una línea de código y abre un mundo de integraciones.
