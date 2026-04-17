@@ -26,6 +26,8 @@ El archivo `pg_hba.conf` de PostgreSQL es estático: cada cambio requiere editar
 | Auditar sin bloquear | No disponible | Modo `is_blocking = false` |
 | Cambios en Cloud SQL (sin acceso a archivos) | Ticket al proveedor | Control total desde SQL |
 
+  **Control por Rol de Servidor (Primary/Replica):** Permite crear reglas que solo aplican en el nodo Primario o en las Réplicas , incluso puedes especificar IP de servidor
+
 ---
 
 ## 🏗️ ¿Cómo funciona?
@@ -119,6 +121,8 @@ ORDER BY id;
 | `is_blocking` | `BOOL` | `true` | `true` = desconecta al usuario. `false` = solo emite un aviso (modo auditoría) |
 | `is_active` | `BOOL` | `true` | Permite activar/desactivar reglas sin eliminarlas |
 | `error_msg` | `TEXT` | *(mensaje genérico)* | Mensaje personalizado que verá el usuario bloqueado |
+| `apply_on` | **TEXT** | Rol de servidor donde aplica la regla: `all` (default), `primary` o `replica`. Usa `pg_is_in_recovery()` internamente, por lo que sobrevive a failovers. |
+| `target_server` | **CIDR** | IP del servidor específico donde aplica la regla. `0.0.0.0` (default) = cualquier servidor. Uso avanzado para topologías con múltiples réplicas. |
 | `description` | `TEXT` | `NULL` | Nota interna para documentar el propósito de la regla |
 
 ---
@@ -218,6 +222,71 @@ VALUES (
 | `system` | pgAdmin | 🔒 Bloqueado (`sys` sin número después) |
 | `12345` | pgAdmin | ✅ Permitido (empieza con número, no coincide con la regla) |
 
+
+
+###  Bloquear `pg_dump` solo en el Primario (apply\_on)
+
+En arquitecturas con **streaming replication**, un `DENY pg_dump` se replica vía WAL a las Réplicas, bloqueando backups en todos los nodos. Con `apply_on = 'primary'`, la regla solo se activa en el Primario — las Réplicas la ignoran porque `pg_is_in_recovery()` devuelve `true`.
+
+```sql
+INSERT INTO public.pg_hba (app_name_regex, rule_type, apply_on, error_msg)
+VALUES ('pg_dump', 'DENY', 'primary', 
+  'ACCESO DENEGADO: Los backups deben ejecutarse en la RÉPLICA (Puerto 5433 o 5434), no en producción.');
+```
+
+| Valor de `apply_on` | Comportamiento |
+| :--- | :--- |
+| `all` | La regla aplica en **todos** los nodos (default). |
+| `primary` | Solo aplica en el nodo Primario (`pg_is_in_recovery() = false`). |
+| `replica` | Solo aplica en nodos Réplica (`pg_is_in_recovery() = true`). |
+
+> **📌 Nota sobre failover:** Si una Réplica se promueve a Primario, `pg_is_in_recovery()` cambia automáticamente a `false` y las reglas con `apply_on = 'primary'` comienzan a aplicar en el nuevo Primario sin intervención manual.
+
+###  Restringir Réplicas exclusivamente para Reporting y Backups
+
+Bloquea todo acceso en las Réplicas excepto las herramientas autorizadas.
+
+```sql
+-- Bloqueo general en réplicas
+INSERT INTO public.pg_hba (rule_type, apply_on, error_msg)
+VALUES ('DENY', 'replica', 'Las réplicas son exclusivas para reporting y backups.');
+
+-- Excepciones: herramientas de BI y backups
+INSERT INTO public.pg_hba (app_name_regex, rule_type, apply_on)
+VALUES ('PowerBI|Tableau|pg_dump', 'ALLOW', 'replica');
+```
+
+###  Bloquear herramientas GUI solo en Producción (Primario)
+
+Permite que los DBAs usen pgAdmin libremente en las Réplicas para consultas de lectura, pero lo bloquea en el Primario.
+
+```sql
+INSERT INTO public.pg_hba (app_name_regex, rule_type, apply_on, error_msg)
+VALUES ('pgadmin|DBeaver', 'DENY', 'primary', 
+  'Herramientas GUI no autorizadas en producción. Use la réplica para consultas de lectura.');
+```
+
+###  Uso Avanzado: `target_server` para Réplicas Específicas
+
+Si tu topología tiene múltiples réplicas con roles distintos (ej. una para BI y otra para backups), puedes combinar `apply_on` con `target_server` para aplicar reglas a un servidor en particular por su IP.
+
+```sql
+-- Permitir Tableau SOLO en la réplica de BI (10.0.0.3)
+INSERT INTO public.pg_hba (app_name_regex, rule_type, apply_on, target_server)
+VALUES ('Tableau', 'ALLOW', 'replica', '10.0.0.3');
+
+-- Permitir pg_dump SOLO en la réplica de backups (10.0.0.4)
+INSERT INTO public.pg_hba (app_name_regex, rule_type, apply_on, target_server)
+VALUES ('pg_dump', 'ALLOW', 'replica', '10.0.0.4');
+```
+
+
+
+
+> **📌 Nota:** requiere intervencion humana en caso de un failover, `target_server` usa `0.0.0.0` por default, lo que significa "cualquier servidor". Solo necesitas especificarlo cuando quieras distinguir entre réplicas individuales. Para la mayoría de los casos, `apply_on` es suficiente. 
+
+
+
 ---
 
 ## 🆘 Recuperación de Emergencia
@@ -267,6 +336,20 @@ SELECT pg_reload_conf();
 > ```
 
 ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## ⚖️ Diferencias entre los dos métodos
 
