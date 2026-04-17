@@ -252,7 +252,7 @@ system: EMPIEZA con 'sys' pero NO sigue un número -> BLOQUEADO.
 
 se puede aplicar una regla como que cubra los dos escenarios '^(?!sys[0-9])[^0-9].*'
 pero es mejor hacerlo de manera individual
-*/
+
 
 INSERT INTO public.pg_hba (
     username_regex, 
