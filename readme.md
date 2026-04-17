@@ -1,98 +1,309 @@
+<p align="center">
+  <img src="https://img.shields.io/badge/PostgreSQL-12%2B-336791?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL 12+"/>
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License"/>
+  <img src="https://img.shields.io/badge/Security-Access%20Control-red?style=for-the-badge&logo=shield" alt="Security"/>
+</p>
 
+# 🛡️ pg_session_blocker
 
-# pg\_session\_blocker 🛡️
+**Control de acceso dinámico para PostgreSQL — sin reinicios, sin editar archivos, sin downtime.**
 
- 
-`pg_session_blocker` es una solución técnica para el control de acceso dinámico en PostgreSQL, diseñada para cumplir con estándares de seguridad como **NIST SP 800-53** e **ISO 27001**.
+`pg_session_blocker` te permite bloquear o permitir conexiones a tu base de datos en tiempo real, filtrando por **IP**, **usuario** y **aplicación**, todo desde una simple tabla SQL.
 
-Permite gestionar el bloqueo de conexiones de forma granular (por IP, Usuario y Aplicación) sin necesidad de modificar el archivo físico `pg_hba.conf` ni reiniciar el servicio, lo cual es crítico en entornos de **Cloud SQL**, **VMs** y arquitecturas con **Réplicas de Lectura**.
+---
 
------
+## ❓ ¿Qué problema resuelve?
 
-## 🧠 Arquitectura y Lógica de Cumplimiento
+El archivo `pg_hba.conf` de PostgreSQL es estático: cada cambio requiere editar el archivo y recargar la configuración. En entornos **Cloud SQL**, **réplicas de lectura** o infraestructuras con acceso limitado al sistema operativo, esto se vuelve un problema real.
 
-El proyecto resuelve la rigidez de las reglas de red tradicionales mediante una capa de validación lógica dentro del motor de la base de datos.
+**pg_session_blocker** mueve ese control a una tabla dentro de la base de datos, dándote flexibilidad total:
 
-### Casos de Uso Críticos:
+| Escenario | Sin pg_session_blocker | Con pg_session_blocker |
+|:---|:---|:---|
+| Bloquear una IP sospechosa | Editar `pg_hba.conf` + reload | Un `INSERT` y listo |
+| Prohibir pgAdmin en producción | Imposible con `pg_hba.conf` | Una regla por `app_name` |
+| Restringir `pg_dump` al nodo primario | Reglas de firewall externas | Una regla `DENY` en la tabla |
+| Auditar sin bloquear | No disponible | Modo `is_blocking = false` |
+| Cambios en Cloud SQL (sin acceso a archivos) | Ticket al proveedor | Control total desde SQL |
 
-1.  **Aislamiento de Carga en Réplicas:** Previene que herramientas de extracción de datos (ej. `pg_dump`) saturen el nodo **Primario**, forzando su ejecución únicamente en nodos de **Réplica**.
-2.  **Control de Aplicaciones no Autorizadas:** Bloquea el acceso desde clientes como `pgAdmin` o `DBeaver` para usuarios específicos, obligándolos a usar el stack de aplicaciones corporativo.
-3.  **Seguridad Dinámica en Cloud:** Permite habilitar o deshabilitar rangos de IP (`CIDR`) en tiempo real mediante una simple sentencia SQL, ideal para entornos donde la propagación de reglas de firewall de red es lenta.
+---
 
------
+## 🏗️ ¿Cómo funciona?
 
-## 📊 Estructura de Control (`public.pg_hba`)
+Cuando un usuario se conecta, `pg_session_blocker` intercepta la sesión y evalúa las reglas en este orden:
 
-La lógica se apoya en una tabla centralizada que emula el comportamiento del archivo de configuración nativo de PostgreSQL, pero con capacidades extendidas:
-
-| Columna | Tipo | Función |
-| :--- | :--- | :--- |
-| `client_ip` | **CIDR** | Rango de red o IP específica (ej. `10.0.0.1/32`). |
-| `username_regex` | **TEXT** | Expresión regular para filtrar uno o múltiples usuarios. |
-| `app_name_regex` | **TEXT** | Filtro por nombre de aplicación (ej. `^pg_dump$`). |
-| `rule_type` | **TEXT** | Define si la regla es de permitir (`ALLOW`) o denegar (`DENY`). |
-| `is_blocking` | **BOOL** | `true` aborta la sesión; `false` solo emite un aviso (Notice). |
-| `error_msg` | **TEXT** | Mensaje personalizado que recibirá el cliente al ser bloqueado. |
-
------
-
-## 🛠️ Implementación por Versión
-
-Dependiendo de tu versión de PostgreSQL, debes aplicar el script correspondiente para activar la intercepción:
-
-### v12 a v16: `block_session_login_hook.sql`
-
-Implementa la extension login_hool ( **Hook de Post-Autenticación**). Intercepta la conexión inmediatamente después de que el usuario se identifica, pero antes de otorgar acceso al catálogo.
-
-### v17 en adelante: `block_session_trigger.sql`
-
-Utiliza el nuevo **Event Trigger de Login** nativo. Es la forma más moderna y eficiente de gestionar políticas de acceso procedimentales en PostgreSQL 17+.
-
------
-
-## 🚀 Ejemplos de Configuración y Laboratorio
-
-### 1\. Bloqueo de herramientas de Backup en el Nodo Principal
-
-Evita que se ejecuten volcados de datos que afecten el rendimiento de producción.
-
-```sql
-INSERT INTO public.pg_hba (username_regex, app_name_regex, rule_type, error_msg)
-VALUES ('ALL', 'pg_dump', 'DENY', 'ACCESO DENEGADO: Realice sus backups en la REPLICA (Puerto 5433)');
+```
+   ┌─────────────────────────────┐
+   │   Usuario intenta conectar  │
+   └──────────────┬──────────────┘
+                  ▼
+   ┌─────────────────────────────┐
+   │  ¿Existe regla ALLOW        │
+   │  que coincida con IP,        │
+   │  usuario y app?              │
+   └──────────┬──────────────────┘
+              │
+         Sí ──┤──── No
+              │         │
+              ▼         ▼
+   ┌──────────────┐  ┌─────────────────────────────┐
+   │  ✅ PERMITIR  │  │  ¿Existe regla DENY          │
+   │  acceso       │  │  que coincida?               │
+   └──────────────┘  └──────────┬──────────────────┘
+                               │
+                          Sí ──┤──── No
+                               │         │
+                               ▼         ▼
+                    ┌──────────────┐  ┌──────────────┐
+                    │  🔒 BLOQUEAR  │  │  ✅ PERMITIR  │
+                    │  o AVISAR     │  │  acceso       │
+                    └──────────────┘  └──────────────┘
 ```
 
-### 2\. Restricción de Segmento IP para Usuarios Específicos
+> **Regla clave:** Las reglas `ALLOW` siempre se evalúan primero. Si un usuario tiene una excepción, nunca será bloqueado.
 
-Ideal para cumplir con el control de acceso basado en ubicación (NIST).
+---
 
-```sql
-INSERT INTO public.pg_hba (client_ip, username_regex, rule_type, error_msg)
-VALUES ('192.168.1.0/24', 'root_admin', 'DENY', 'ALERTA: Acceso de admin prohibido desde red pública.');
-```
+## 🚀 Instalación Rápida
 
-### 3\. Modo de Auditoría (No Bloqueante)
+### Paso 1 — Elige tu método según la versión de PostgreSQL
 
-Si deseas monitorear sin desconectar al usuario, cambia `is_blocking` a `false`.
+| Versión | Método | Archivo |
+|:---|:---|:---|
+| **PostgreSQL 12 – 16** | Extensión `login_hook` | `block_session_login_hook.sql` |
+| **PostgreSQL 17+** | Event Trigger nativo (`ON LOGIN`) | `block_session_trigger.sql` |
 
-```sql
-INSERT INTO public.pg_hba (username_regex, is_blocking, error_msg)
-VALUES ('usuario_test', false, 'AVISO: Su actividad está siendo monitoreada por auditoría.');
-```
+### Paso 2 — Ejecuta el script
 
------
-
-## 📂 Estructura de Directorios
+#### Opción A: PostgreSQL 12 – 16 (login_hook)
 
 ```bash
-.
-├── block_session_login_hook.sql   # Implementación para PG 12-16.
-├── block_session_trigger.sql      # Implementación para PG 17+.
-└── README.md                      # Esta guía.
+# 1. Instala la extensión login_hook en tu servidor
+# 2. Configura postgresql.conf:
+#    session_preload_libraries = 'login_hook'
+# 3. Recarga la configuración:
+pg_ctl reload -D $PGDATA
+
+# 4. Ejecuta el script SQL:
+psql -d tu_base_de_datos -f block_session_login_hook.sql
 ```
 
------
+#### Opción B: PostgreSQL 17+ (Event Trigger)
+
+```bash
+# No requiere extensiones externas
+psql -d tu_base_de_datos -f block_session_trigger.sql
+```
+
+### Paso 3 — Verifica la instalación
+
+```sql
+-- Deberías ver la tabla con las reglas precargadas (todas desactivadas por defecto)
+SELECT id, app_name_regex, rule_type, is_active, description
+FROM pg_hba
+ORDER BY id;
+```
+
+> **📌 Nota:** Todas las reglas vienen desactivadas (`is_active = false`). Actívalas según tus necesidades.
+
+---
+
+## 📊 Estructura de la tabla `pg_hba`
+
+| Columna | Tipo | Default | Descripción |
+|:---|:---|:---|:---|
+| `client_ip` | `CIDR` | `0.0.0.0/0` | IP o rango de red. Ej: `10.0.0.1/32` para una IP, `10.0.0.0/24` para un segmento |
+| `username_regex` | `TEXT` | `ALL` | Expresión regular del usuario. Ej: `^jose$` para un usuario exacto |
+| `app_name_regex` | `TEXT` | `ALL` | Expresión regular de la aplicación. Ej: `pgadmin`, `^pg_dump$` |
+| `rule_type` | `TEXT` | `DENY` | `ALLOW` para permitir, `DENY` para bloquear |
+| `is_blocking` | `BOOL` | `true` | `true` = desconecta al usuario. `false` = solo emite un aviso (modo auditoría) |
+| `is_active` | `BOOL` | `true` | Permite activar/desactivar reglas sin eliminarlas |
+| `error_msg` | `TEXT` | *(mensaje genérico)* | Mensaje personalizado que verá el usuario bloqueado |
+| `description` | `TEXT` | `NULL` | Nota interna para documentar el propósito de la regla |
+
+---
+
+## 📖 Ejemplos de Uso
+
+### Bloquear una aplicación específica
+
+```sql
+-- Bloquear pgAdmin para todos los usuarios
+INSERT INTO pg_hba (app_name_regex, rule_type, is_blocking, error_msg)
+VALUES ('pgadmin', 'DENY', true,
+  'Conexión rechazada: pgAdmin no está autorizado. Contacte al equipo de DBA.');
+```
+
+### Bloquear un rango de IPs
+
+```sql
+-- Bloquear toda la red 192.168.1.x
+INSERT INTO pg_hba (client_ip, rule_type, is_blocking)
+VALUES ('192.168.1.0/24', 'DENY', true);
+```
+
+### Bloquear un usuario específico
+
+```sql
+-- Bloquear al usuario "jose" desde cualquier origen
+INSERT INTO pg_hba (username_regex, rule_type, is_blocking)
+VALUES ('^jose$', 'DENY', true);
+```
+
+### Crear una excepción (ALLOW)
+
+```sql
+-- Permitir que el usuario "postgres" acceda desde localhost aunque existan reglas DENY
+INSERT INTO pg_hba (client_ip, username_regex, rule_type)
+VALUES ('127.0.0.1', '^postgres$', 'ALLOW');
+```
+
+### Combinar múltiples filtros
+
+```sql
+-- Bloquear al usuario "jose" solo cuando usa psql desde la IP 127.0.0.1
+INSERT INTO pg_hba (client_ip, username_regex, app_name_regex, rule_type, is_blocking)
+VALUES ('127.0.0.1/32', '^jose$', '^psql$', 'DENY', true);
+```
+
+### Modo auditoría (monitorear sin bloquear)
+
+```sql
+-- Registrar un aviso cuando alguien use pg_dump, sin desconectarlo
+INSERT INTO pg_hba (app_name_regex, rule_type, is_blocking)
+VALUES ('pg_dump', 'DENY', false);
+```
+
+### Forzar backups solo en la réplica
+
+```sql
+-- Bloquear pg_dump en el nodo primario
+INSERT INTO pg_hba (app_name_regex, rule_type, error_msg)
+VALUES ('pg_dump', 'DENY',
+  'ACCESO DENEGADO: Realice los backups en la RÉPLICA (puerto 5433), no en producción.');
+```
+
+---
+
+## 🔥 Caso práctico: Control de cuentas de servicio
+
+Un escenario real donde las cuentas de servicio de aplicaciones solo deben conectarse desde su aplicación oficial, nunca desde herramientas externas como pgAdmin:
+
+```sql
+-- 1. Bloquear pgAdmin para todos los usuarios que empiecen con letra (cuentas de servicio)
+INSERT INTO pg_hba (username_regex, app_name_regex, rule_type, is_blocking, error_msg, description)
+VALUES (
+  '^[^0-9].*',        -- Usuarios que empiezan con letra
+  'pgadmin',
+  'DENY', true,
+  'Acceso denegado: Este usuario es de uso exclusivo del aplicativo oficial. Contacte al equipo de DBA.',
+  'Bloqueo de cuentas de servicio en herramientas no autorizadas'
+);
+
+-- 2. Excepción: usuarios operativos "sys" + número de empleado pueden usar pgAdmin
+INSERT INTO pg_hba (username_regex, app_name_regex, rule_type, description)
+VALUES (
+  '^sys[0-9].*',       -- Ej: sys521456
+  'pgadmin',
+  'ALLOW',
+  'Excepción: usuarios operativos sys con número de empleado'
+);
+```
+
+**Resultado:**
+| Usuario | Herramienta | Resultado |
+|:---|:---|:---|
+| `user_app` | pgAdmin | 🔒 Bloqueado (empieza con letra) |
+| `sys521456` | pgAdmin | ✅ Permitido (excepción `sys` + número) |
+| `system` | pgAdmin | 🔒 Bloqueado (`sys` sin número después) |
+| `12345` | pgAdmin | ✅ Permitido (empieza con número, no coincide con la regla) |
+
+---
+
+## 🆘 Recuperación de Emergencia
+
+Si accidentalmente te bloqueas a ti mismo, sigue estos pasos según tu método:
+
+### PostgreSQL 12 – 16 (login_hook)
+
+```bash
+# 1. Edita postgresql.conf y comenta o elimina la línea:
+#    session_preload_libraries = 'login_hook'
+
+# 2. Recarga la configuración (no requiere reinicio):
+pg_ctl reload -D $PGDATA
+
+# 3. Ahora puedes conectarte y corregir las reglas:
+psql -d tu_base_de_datos
+# > TRUNCATE login_hook.pg_hba;  -- o elimina la regla problemática
+```
+
+### PostgreSQL 17+ (Event Trigger)
+
+```bash
+# 1. Conéctate a otra base de datos (ej: template1):
+psql -d template1
+
+# 2. Desactiva los event triggers a nivel de cluster:
+ALTER SYSTEM SET event_triggers TO off;
+SELECT pg_reload_conf();
+
+# 3. Ahora conéctate a tu base y corrige las reglas:
+psql -d tu_base_de_datos
+# > TRUNCATE public.pg_hba;  -- o elimina la regla problemática
+
+# 4. Reactiva los event triggers:
+ALTER SYSTEM RESET event_triggers;
+SELECT pg_reload_conf();
+```
+
+> **⚠️ Alternativa rápida para Event Trigger:**
+> ```sql
+> -- Deshabilitar solo el trigger sin tocar reglas globales
+> ALTER EVENT TRIGGER my_login_trg DISABLE;
+>
+> -- Reactivar cuando termines:
+> ALTER EVENT TRIGGER my_login_trg ENABLE;
+> ```
+
+---
+
+## ⚖️ Diferencias entre los dos métodos
+
+| Característica | login_hook (PG 12–16) | Event Trigger (PG 17+) |
+|:---|:---|:---|
+| Requiere extensión externa | ✅ Sí (`login_hook`) | ❌ No, es nativo |
+| Bloquea superusuarios | ✅ Sí (usa `pg_terminate_backend`) | ✅ Sí (usa `RAISE EXCEPTION`) |
+| Esquema de la tabla | `login_hook.pg_hba` | `public.pg_hba` |
+| Configuración requerida | `session_preload_libraries` en `postgresql.conf` | Ninguna |
+| Método de desactivación | Remover de `session_preload_libraries` + reload | `ALTER EVENT TRIGGER ... DISABLE` |
+| Recomendación | Entornos legacy o con PG < 17 | **Método preferido** para PG 17+ |
+
+---
+
+## 🗂️ Archivos del proyecto
+
+```
+pg_session_blocker/
+├── block_session_login_hook.sql   # Implementación para PostgreSQL 12 – 16
+├── block_session_trigger.sql      # Implementación para PostgreSQL 17+
+└── README.md                      # Documentación
+```
+
+---
+
+## 🤝 Contribuir
+
+¿Encontraste un bug o tienes una idea? Abre un [Issue](https://github.com/CR0NYM3X/pg_session_blocker/issues) o envía un Pull Request. Toda contribución es bienvenida.
+
+---
 
 ## ✒️ Autor
 
-  * **Desarrollo y Estrategia:** [CR0NYM3X](https://www.google.com/search?q=https://github.com/CR0NYM3X)
-  * **Enfoque:** Seguridad Defensiva y Cumplimiento Normativo (Compliance-as-Code).
+Desarrollado por [**CR0NYM3X**](https://github.com/CR0NYM3X)
+
+---
+
+<p align="center">
+  <i>Si este proyecto te fue útil, regálale una ⭐ en GitHub.</i>
+</p>
