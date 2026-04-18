@@ -11,6 +11,8 @@ CREATE TABLE login_hook.pg_hba (
     rule_type       text NOT NULL CHECK (rule_type IN ('ALLOW', 'DENY')) DEFAULT 'DENY',
     is_blocking     boolean DEFAULT true,  -- true: RAISE EXCEPTION, false: RAISE NOTICE
     is_active       boolean DEFAULT true,    -- Permite habilitar/deshabilitar la regla
+	apply_on        TEXT NOT NULL DEFAULT 'all'  CHECK (apply_on IN ('all', 'primary', 'replica')),
+	target_server   CIDR NOT NULL DEFAULT '0.0.0.0/0'
     error_msg       TEXT NOT NULL DEFAULT 'Política de seguridad aplicada, revise con el administrador',
     description     TEXT,
     created_at      timestamp with time zone DEFAULT now(),
@@ -106,6 +108,10 @@ BEGIN
       AND (client_ip <<= '0.0.0.0/0' OR v_current_ip <<= client_ip)
       AND (username_regex = 'all' OR username_regex = 'ALL' OR v_current_user ~ username_regex)
       AND (app_name_regex = 'all' OR app_name_regex = 'ALL' OR v_current_app ~* app_name_regex)
+	  AND (apply_on = 'all'
+	      OR (apply_on = 'primary' AND NOT pg_is_in_recovery())
+	      OR (apply_on = 'replica'  AND pg_is_in_recovery()))
+	  AND (target_server = '0.0.0.0' OR target_server = inet_server_addr())
     LIMIT 1;
 
     IF FOUND THEN
@@ -122,6 +128,10 @@ BEGIN
       AND (client_ip <<= '0.0.0.0/0' OR v_current_ip <<= client_ip)
       AND (username_regex = 'all' OR username_regex = 'ALL' OR v_current_user ~ username_regex)
       AND (app_name_regex = 'all' OR app_name_regex = 'ALL' OR v_current_app ~* app_name_regex)
+	  AND (apply_on = 'all'
+	      OR (apply_on = 'primary' AND NOT pg_is_in_recovery())
+	      OR (apply_on = 'replica'  AND pg_is_in_recovery()))
+	  AND (target_server = '0.0.0.0' OR target_server = inet_server_addr())		
     --ORDER BY ( (client_ip IS NOT NULL)::int + (username_regex IS NOT NULL)::int + (app_name_regex IS NOT NULL)::int ) DESC
     LIMIT 1;
     -- El ORDER BY opcional prioriza reglas más específicas sobre las generales
