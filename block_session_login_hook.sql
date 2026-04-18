@@ -111,7 +111,7 @@ BEGIN
 	  AND (apply_on = 'all'
 	      OR (apply_on = 'primary' AND NOT pg_is_in_recovery())
 	      OR (apply_on = 'replica'  AND pg_is_in_recovery()))
-	  AND (target_server = '0.0.0.0' OR target_server = inet_server_addr())
+	  AND (target_server = '0.0.0.0/0' OR target_server = inet_server_addr())
     LIMIT 1;
 
     IF FOUND THEN
@@ -131,7 +131,7 @@ BEGIN
 	  AND (apply_on = 'all'
 	      OR (apply_on = 'primary' AND NOT pg_is_in_recovery())
 	      OR (apply_on = 'replica'  AND pg_is_in_recovery()))
-	  AND (target_server = '0.0.0.0' OR target_server = inet_server_addr())		
+	  AND (target_server = '0.0.0.0/0' OR target_server = inet_server_addr())		
     --ORDER BY ( (client_ip IS NOT NULL)::int + (username_regex IS NOT NULL)::int + (app_name_regex IS NOT NULL)::int ) DESC
     LIMIT 1;
     -- El ORDER BY opcional prioriza reglas más específicas sobre las generales
