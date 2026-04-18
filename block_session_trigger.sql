@@ -9,7 +9,7 @@ CREATE TABLE public.pg_hba (
     is_blocking     boolean DEFAULT true,  -- true: RAISE EXCEPTION, false: RAISE NOTICE
     is_active       boolean DEFAULT true,    -- Permite habilitar/deshabilitar la regla
 	apply_on        TEXT NOT NULL DEFAULT 'all'  CHECK (apply_on IN ('all', 'primary', 'replica')),
-	target_server   CIDR NOT NULL DEFAULT '0.0.0.0/0'	
+	target_server   CIDR NOT NULL DEFAULT '0.0.0.0/0',
     error_msg       TEXT NOT NULL DEFAULT 'Política de seguridad aplicada, revise con el administrador',
     description     TEXT,
     created_at      timestamp with time zone DEFAULT now(),
@@ -37,7 +37,7 @@ INSERT INTO public.pg_hba (app_name_regex, is_active , description,error_msg) VA
 INSERT INTO public.pg_hba (app_name_regex, is_active , description)
 VALUES
     -- Herramientas de Administración (GUIs)
-    ('DataGrip'         ,false,    'JetBrains DataGrip — Solo permitido en desarrollo'),
+	('DataGrip'         ,false,    'JetBrains DataGrip — Solo permitido en desarrollo'),
     ('HeidiSQL'         ,false,    'HeidiSQL — Cliente no autorizado'),
     ('SQLGate'          ,false,    'SQLGate — Cliente no autorizado'),
     ('TablePlus'        ,false,    'TablePlus — Cliente no autorizado'),
@@ -105,7 +105,7 @@ BEGIN
 	  AND (apply_on = 'all'
 	      OR (apply_on = 'primary' AND NOT pg_is_in_recovery())
 	      OR (apply_on = 'replica'  AND pg_is_in_recovery()))
-	  AND (target_server = '0.0.0.0' OR target_server = inet_server_addr())	
+	  AND (target_server = '0.0.0.0/0' OR target_server = inet_server_addr())	
     LIMIT 1;
 
     IF FOUND THEN
@@ -125,7 +125,7 @@ BEGIN
 	  AND (apply_on = 'all'
 	      OR (apply_on = 'primary' AND NOT pg_is_in_recovery())
 	      OR (apply_on = 'replica'  AND pg_is_in_recovery()))
-	  AND (target_server = '0.0.0.0' OR target_server = inet_server_addr())		
+	  AND (target_server = '0.0.0.0/0' OR target_server = inet_server_addr())		
     --ORDER BY ( (client_ip IS NOT NULL)::int + (username_regex IS NOT NULL)::int + (app_name_regex IS NOT NULL)::int ) DESC
     LIMIT 1;
     -- El ORDER BY opcional prioriza reglas más específicas sobre las generales
